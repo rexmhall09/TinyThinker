@@ -13,6 +13,10 @@ max_iters = 30000
 learning_rate = 3e-4
 print(f"Using device: {device}")
 eval_iters = 100  # Save iters rn
+save_iters = 1000
+seed = 42
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 # ------------
 
 # Initialize the tokenizer
@@ -37,6 +41,14 @@ n = int(0.9 * len(data))  # First 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
 
+assert len(train_data) > block_size, {
+    f"train_data (size={len(train_data)}) must be larger than block_size ({block_size})"
+}
+
+assert len(val_data) > block_size, {
+    f"val_data (size={len(val_data)}) must be larger than block_size ({block_size})"
+}
+
 # Data loading
 def get_batch(split):
     """Generates a small batch of data of inputs x and targets y."""
@@ -54,7 +66,7 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        for k in range(1):
+        for k in range(100):
             X, Y = get_batch(split)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -78,7 +90,9 @@ if os.path.exists("model.pth"):
     model.eval()
 else:
     print("model.pth does not exist. Skipping model loading.")
-m = model.to(device)
+
+model = model.to(device)
+model.train()
 
 # Print number of parameters
 print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters")
@@ -86,10 +100,13 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters")
 # Create a torch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+os.makedirs("checkpoints", exist_ok=True)
+
 for iter in tqdm.tqdm(range(max_iters)):
     # Save model and evaluate the loss on train and val set
     if iter % eval_iters == 0 or iter == max_iters - 1:
         losses = estimate_loss()
+    if iter % save_iters == 0:
         torch.save(model.state_dict(), f"checkpoints/model_epoch_{iter}.pth")
 
     # Sample a batch of data
