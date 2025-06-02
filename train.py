@@ -6,6 +6,7 @@ from model import GPTLanguageModel, device, n_embd, n_head, n_layer, dropout, bl
 from tokenizer import Tokenizer
 import os
 import itertools
+import numpy as np
 
 # Hyperparameters
 batch_size = 4  # How many independent sequences will be processed in parallel
@@ -17,6 +18,10 @@ save_iters = 1000
 seed = 42
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
+enc_numpy = "corpus_int32.npy"  # Path to the encoded corpus
+data_mm = np.load(enc_numpy, mmap_mode='r')  # Memory-mapped array for large data
+
+data = torch.from_numpy(data_mm.astype(np.int64, copy=False))  # Convert to torch tensor
 # ------------
 
 # Initialize the tokenizer
@@ -32,22 +37,19 @@ def decode(l):
 
 # Download and prepare the data
 # Note: Ensure 'input.txt' is present in the project directory
-with open('input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
 
-# Split for train and test
-data = torch.tensor(encode(text), dtype=torch.long)
+
 n = int(0.9 * len(data))  # First 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
 
-assert len(train_data) > block_size, {
+assert len(train_data) > block_size, (
     f"train_data (size={len(train_data)}) must be larger than block_size ({block_size})"
-}
+)
 
-assert len(val_data) > block_size, {
+assert len(val_data) > block_size, (
     f"val_data (size={len(val_data)}) must be larger than block_size ({block_size})"
-}
+)
 
 # Data loading
 def get_batch(split):
@@ -66,7 +68,7 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        for k in range(100):
+        for k in range(eval_iters):
             X, Y = get_batch(split)
             logits, loss = model(X, Y)
             losses[k] = loss.item()

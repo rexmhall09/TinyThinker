@@ -3,12 +3,12 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # Architectural and device parameters defined here
-n_embd = 768
-n_head = 12
-n_layer = 12
-dropout = 0.3
+n_embd = 1600
+n_head = 25
+n_layer = 48
+dropout  = 0.2
 block_size = 1028
-#using old ones has 1.2m params using new ones 3.5b params much bigger (might be inaccurate haven't double checked)
+
 device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 
 class Head(nn.Module):
