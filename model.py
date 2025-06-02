@@ -9,7 +9,7 @@ n_layer = 48
 dropout  = 0.2
 block_size = 1028
 
-device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 class Head(nn.Module):
     """ one head of self-attention """
