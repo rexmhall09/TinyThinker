@@ -9,3 +9,12 @@ To Train/Fine-Tune:
 
 To prompt:
 Just run prompt.py.
+
+## Running Tests
+Install pytest with `pip install pytest` if you don't already have it. Then execute:
+
+```bash
+pytest
+```
+
+from the repository root to run the unit tests.
