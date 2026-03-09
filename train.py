@@ -1,74 +1,61 @@
+import argparse
+import os
+
+import numpy as np
 import torch
-import torch.nn as nn
-from torch.nn import functional as F
 import tqdm
+
 from model import GPTLanguageModel, device, n_embd, n_head, n_layer, dropout, block_size
 from tokenizer import Tokenizer
-import os
-import itertools
-import numpy as np
 
-# Hyperparameters
-batch_size = 4  # How many independent sequences will be processed in parallel
-max_iters = 30000
-learning_rate = 3e-4
+parser = argparse.ArgumentParser(description="Train TinyThinker")
+parser.add_argument("--batch-size", type=int, default=4)
+parser.add_argument("--max-iters", type=int, default=30000)
+parser.add_argument("--lr", type=float, default=3e-4)
+parser.add_argument("--eval-interval", type=int, default=100)
+parser.add_argument("--save-interval", type=int, default=1000)
+parser.add_argument("--grad-clip", type=float, default=1.0)
+parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--corpus", type=str, default="corpus_int32.npy")
+args = parser.parse_args()
+
 print(f"Using device: {device}")
-eval_iters = 100  # Save iters rn
-save_iters = 1000
-seed = 42
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-enc_numpy = "corpus_int32.npy"  # Path to the encoded corpus
-data_mm = np.load(enc_numpy, mmap_mode='r')  # Memory-mapped array for large data
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed(args.seed)
 
-data = torch.from_numpy(data_mm.astype(np.int64, copy=False))  # Convert to torch tensor
-# ------------
+data_mm = np.load(args.corpus, mmap_mode='r')
+data = torch.from_numpy(data_mm.astype(np.int64, copy=False))
 
-# Initialize the tokenizer
 tokenizer = Tokenizer()
 
-def encode(s):
-    """Encodes a string into a list of token IDs using the tokenizer."""
-    return tokenizer.encode(s)
-
-def decode(l):
-    """Decodes a list of token IDs back into a string using the tokenizer."""
-    return tokenizer.decode(l)
-
-# Download and prepare the data
-# Note: Ensure 'input.txt' is present in the project directory
-
-
-n = int(0.9 * len(data))  # First 90% will be train, rest val
+n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
 
 assert len(train_data) > block_size, (
     f"train_data (size={len(train_data)}) must be larger than block_size ({block_size})"
 )
-
 assert len(val_data) > block_size, (
     f"val_data (size={len(val_data)}) must be larger than block_size ({block_size})"
 )
 
-# Data loading
+
 def get_batch(split):
-    """Generates a small batch of data of inputs x and targets y."""
     d = train_data if split == 'train' else val_data
-    ix = torch.randint(len(d) - block_size, (batch_size,))
+    ix = torch.randint(len(d) - block_size, (args.batch_size,))
     x = torch.stack([d[i:i + block_size] for i in ix])
     y = torch.stack([d[i + 1:i + block_size + 1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
 
+
 @torch.no_grad()
 def estimate_loss():
-    """Estimates the loss on both train and validation sets."""
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
+        losses = torch.zeros(args.eval_interval)
+        for k in range(args.eval_interval):
             X, Y = get_batch(split)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -76,50 +63,45 @@ def estimate_loss():
     model.train()
     return out
 
-# Instantiate the model
+
 model = GPTLanguageModel(
     vocab_size=tokenizer.vocab_size,
     n_embd=n_embd,
     n_head=n_head,
     n_layer=n_layer,
     block_size=block_size,
-    dropout=dropout
+    dropout=dropout,
 )
-# Load existing model if available
+
 if os.path.exists("model.pth"):
     print("model.pth exists. Loading the model...")
     model.load_state_dict(torch.load("model.pth", map_location=device))
     model.eval()
 else:
-    print("model.pth does not exist. Skipping model loading.")
+    print("model.pth does not exist. Training from scratch.")
 
 model = model.to(device)
 model.train()
 
-# Print number of parameters
 print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters")
 
-# Create a torch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-
+optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 os.makedirs("checkpoints", exist_ok=True)
 
-for iter in tqdm.tqdm(range(max_iters)):
-    # Save model and evaluate the loss on train and val set
-    if iter % eval_iters == 0 or iter == max_iters - 1:
+for iter in tqdm.tqdm(range(args.max_iters)):
+    if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
         losses = estimate_loss()
-    if iter % save_iters == 0:
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+    if iter % args.save_interval == 0:
         torch.save(model.state_dict(), f"checkpoints/model_epoch_{iter}.pth")
 
-    # Sample a batch of data
     xb, yb = get_batch('train')
-
-    # Evaluate the loss
     logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
     optimizer.step()
 
-# Save the model's state dictionary
 torch.save(model.state_dict(), "model.pth")
 print("Model saved successfully!")

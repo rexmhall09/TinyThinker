@@ -2,65 +2,52 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-# Architectural and device parameters defined here
 n_embd = 1600
 n_head = 25
 n_layer = 48
-dropout  = 0.2
+dropout = 0.2
 block_size = 1028
 
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
-class Head(nn.Module):
-    """ one head of self-attention """
-
-    def __init__(self, head_size, n_embd, block_size, dropout):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        # input of size (batch, time-step, channels)
-        # and ofc output of size (batch, time-step, head size)
-        B,T,C = x.shape
-        k = self.key(x)   # (B,T,hs)
-        q = self.query(x) # (B,T,hs)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
-        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
-        return out
 
 class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
 
-    def __init__(self, num_heads, head_size, n_embd, block_size, dropout):
+    def __init__(self, num_heads, n_embd, block_size, dropout):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size, n_embd, block_size, dropout) for _ in range(num_heads)])
-        self.proj = nn.Linear(head_size * num_heads, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        assert n_embd % num_heads == 0
+        self.num_heads = num_heads
+        self.head_size = n_embd // num_heads
+        self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
+        B, T, C = x.shape
+        qkv = self.qkv(x)
+        q, k, v = qkv.split(C, dim=2)
+        q = q.view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.attn_dropout(wei)
+        out = wei @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        out = self.resid_dropout(self.proj(out))
         return out
 
-class FeedFoward(nn.Module):
-    """ a simple linear layer followed by a non-linearity """
+
+class FeedForward(nn.Module):
 
     def __init__(self, n_embd, dropout):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout),
         )
@@ -68,15 +55,13 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 class Block(nn.Module):
-    """ Transformer block: communication followed by computation """
 
     def __init__(self, n_embd, n_head, block_size, dropout):
-        # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
-        head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size, n_embd, block_size, dropout)
-        self.ffwd = FeedFoward(n_embd, dropout)
+        self.sa = MultiHeadAttention(n_head, n_embd, block_size, dropout)
+        self.ffwd = FeedForward(n_embd, dropout)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
@@ -85,18 +70,17 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x
 
+
 class GPTLanguageModel(nn.Module):
 
     def __init__(self, vocab_size, n_embd=n_embd, n_head=n_head, n_layer=n_layer, block_size=block_size, dropout=dropout):
         super().__init__()
         self.block_size = block_size
-        # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(self.block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head, block_size=self.block_size, dropout=dropout) for _ in range(n_layer)])
-        self.ln_f = nn.LayerNorm(n_embd) # final layer norm
+        self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
-
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -109,38 +93,32 @@ class GPTLanguageModel(nn.Module):
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
-
-        # idx and targets are both (B,T) tensor of integers
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device)) # (T,C)
-        x = tok_emb + pos_emb # (B,T,C)
-        x = self.blocks(x) # (B,T,C)
-        x = self.ln_f(x) # (B,T,C)
-        logits = self.lm_head(x) # (B,T,vocab_size)
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device))
+        x = tok_emb + pos_emb
+        x = self.blocks(x)
+        x = self.ln_f(x)
+        logits = self.lm_head(x)
 
         if targets is None:
             loss = None
         else:
             B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
+            logits = logits.view(B * T, C)
+            targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
-        # idx is (B, T) array of indices in the current context
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens
             idx_cond = idx[:, -self.block_size:]
-            # get the predictions
-            logits, loss = self(idx_cond)
-            # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
-            # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1) # (B, C)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+            logits, _ = self(idx_cond)
+            logits = logits[:, -1, :] / max(temperature, 1e-8)
+            if top_k is not None and top_k >= 1:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float('-inf')
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
         return idx

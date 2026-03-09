@@ -1,7 +1,10 @@
-import numpy as np, os, tqdm, mmap
+import os
+
+import numpy as np
+
 from tokenizer import Tokenizer
 
-enc_npy = "corpus_int32.npy" # 1-byte header + raw int32
+enc_npy = "corpus_int32.npy"
 txt = "input.txt"
 
 if os.path.exists(enc_npy):
@@ -12,7 +15,6 @@ tok = Tokenizer()
 with open(txt, "r", encoding="utf-8") as f:
     raw = f.read()
 
-# Encode and dump as int32 little-endian
 arr = np.asarray(tok.encode(raw), dtype=np.int32)
-np.save(enc_npy, arr) # produces .npy header + data
-print(f"Wrote {arr.size:,} tokens to {enc_npy}  ({arr.nbytes/1e6:.1f} MB)")
+np.save(enc_npy, arr)
+print(f"Wrote {arr.size:,} tokens to {enc_npy}  ({arr.nbytes / 1e6:.1f} MB)")
