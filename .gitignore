@@ -14,6 +14,10 @@ checkpoints/
 dist/
 build/
 
+artifacts/
+runs/
+*.zip
+
 .env
 .venv/
 venv/

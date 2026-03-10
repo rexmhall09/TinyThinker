@@ -1,116 +1,141 @@
 # TinyThinker
 
-A small GPT-style language model with thinking token support. Built from scratch using PyTorch — an improved version of TinyTalker with an enhanced tokenizer, training loop, and a `<think>` token for chain-of-thought reasoning.
+TinyThinker is a small GPT-style character model with explicit `<think>` / `</think>` reasoning markers, a generated tokenizer artifact, resumable training runs, and a Google Colab notebook that can train and download a model bundle in one pass.
 
-## Features
+## What changed
+- The tokenizer vocabulary is now generated from the actual training text instead of relying on the checked-in `chars.txt` file.
+- Training writes a self-contained run directory with checkpoints, configs, metrics, tokenizer metadata, and a final inference artifact.
+- Prompting loads the saved artifact directly instead of reconstructing the model from loose side files.
+- The default model is right-sized for the included dataset instead of using the old giant hard-coded architecture.
+- A Colab notebook is included at `notebooks/train_tinythinker_colab.ipynb` for one-click GPU training and download.
 
-- Character-level tokenizer with special tokens (`<eos>`, `<think>`, `</think>`)
-- Transformer architecture with batched multi-head self-attention and GELU activation
-- Memory-mapped data loading for large corpora
-- Checkpoint saving during training with loss logging
-- Gradient clipping for stable training
-- Interactive prompt with temperature and top-k sampling controls
-- CLI arguments for all hyperparameters
-
-## Project Structure
-
-```
-model.py          — GPT model (transformer blocks, batched attention, feed-forward)
-tokenizer.py      — Character-level tokenizer with special token support
-train.py          — Training loop with evaluation, checkpointing, and loss logging
-build_memmap.py   — Preprocesses input.txt into a memory-mapped numpy array
-prompt.py         — Interactive CLI for prompting a trained model
-chars.txt         — Character vocabulary
-tests/            — Unit tests
-```
+## Repository layout
+- `config.py` — shared model and training configuration dataclasses
+- `model.py` — GPT model with SDPA-based causal attention
+- `tokenizer.py` — generated tokenizer artifact logic
+- `build_memmap.py` — builds dataset artifacts from input text
+- `train.py` — resumable training entrypoint
+- `prompt.py` — inference entrypoint for saved artifacts
+- `artifacts.py` — artifact filenames and JSON/checkpoint helpers
+- `runtime.py` — device and AMP helpers
+- `notebooks/train_tinythinker_colab.ipynb` — Colab notebook for end-to-end training
+- `tests/` — targeted unit and smoke tests
 
 ## Requirements
-
-- Python 3.12+
-- PyTorch
+- Python 3.10+
+- PyTorch 2.1+
 - NumPy
 - tqdm
 
-Install dependencies:
+Install locally:
 
 ```bash
-pip install torch numpy tqdm
+pip install -e .
+pip install -e .[dev]
 ```
 
-## Usage
+## Quick start (local)
 
-### Prepare Training Data
-
-1. Add your training text to `input.txt`. Use `<eos>` for end-of-statement markers and `<think>`/`</think>` for thinking tokens.
-2. Preprocess the corpus:
+### 1) Build dataset artifacts
+Use the checked-in `input.txt` by default:
 
 ```bash
-python build_memmap.py
+python build_memmap.py --input input.txt --out-dir artifacts/data --force
 ```
 
-This creates `corpus_int32.npy`, a memory-mapped numpy array used during training.
+This writes:
+- `artifacts/data/corpus.npy`
+- `artifacts/data/tokenizer.json`
+- `artifacts/data/dataset_meta.json`
 
-### Train
+### 2) Train
+Run a right-sized default training job:
 
 ```bash
-python train.py
+python train.py --data-dir artifacts/data --run-dir runs/default
 ```
 
-All hyperparameters are configurable via CLI:
+Useful overrides:
 
 ```bash
-python train.py --batch-size 8 --max-iters 50000 --lr 1e-4 --grad-clip 1.0
+python train.py \
+  --data-dir artifacts/data \
+  --run-dir runs/experiment-1 \
+  --batch-size 32 \
+  --max-iters 1500 \
+  --eval-interval 100 \
+  --save-interval 100 \
+  --n-embd 384 \
+  --n-head 6 \
+  --n-layer 6 \
+  --block-size 256 \
+  --dropout 0.1
 ```
 
-| Flag              | Default   | Description                        |
-|-------------------|-----------|------------------------------------|
-| `--batch-size`    | 4         | Parallel sequences per step        |
-| `--max-iters`     | 30000     | Total training iterations          |
-| `--lr`            | 3e-4      | Learning rate                      |
-| `--eval-interval` | 100       | Steps between loss evaluations     |
-| `--save-interval` | 1000      | Steps between checkpoint saves     |
-| `--grad-clip`     | 1.0       | Max gradient norm                  |
-| `--seed`          | 42        | Random seed                        |
-| `--corpus`        | corpus_int32.npy | Path to preprocessed data   |
+Each run directory contains at minimum:
+- `checkpoint_last.pt`
+- `checkpoint_best.pt`
+- `model_final.pt`
+- `metrics.jsonl`
+- `model_config.json`
+- `train_config.json`
+- `tokenizer.json`
 
-The model saves to `model.pth` on completion, with periodic checkpoints in `checkpoints/`. If `model.pth` already exists, training resumes from that checkpoint.
-
-### Generate Text
+Resume training from the latest run checkpoint:
 
 ```bash
-python prompt.py
+python train.py --data-dir artifacts/data --run-dir runs/default
 ```
 
-Control generation quality with sampling parameters:
+Or resume from an explicit checkpoint:
 
 ```bash
-python prompt.py --temperature 0.7 --top-k 50
+python train.py --data-dir artifacts/data --run-dir runs/default --resume runs/default/checkpoint_last.pt
 ```
 
-| Flag            | Default | Description                              |
-|-----------------|---------|------------------------------------------|
-| `--temperature` | 0.8     | Lower = more focused, higher = more random |
-| `--top-k`       | None    | Limit sampling to top K tokens           |
-| `--max-tokens`  | 10000   | Maximum tokens to generate per response  |
-
-### Run Tests
+### 3) Generate text
+Prompt from a saved artifact:
 
 ```bash
-pip install pytest
-pytest
+python prompt.py --artifact runs/default/model_final.pt --prompt "Hi!" --num-samples 3
 ```
 
-## Model Architecture
+Interactive mode:
 
-| Parameter    | Value |
-|-------------|-------|
-| Embedding   | 1600  |
-| Heads       | 25    |
-| Layers      | 48    |
-| Block size  | 1028  |
-| Dropout     | 0.2   |
-| Activation  | GELU  |
+```bash
+python prompt.py --artifact runs/default/model_final.pt
+```
+
+## Google Colab: import and run
+Open `notebooks/train_tinythinker_colab.ipynb` in Google Colab, switch the runtime to a GPU, and click **Run all**.
+
+The notebook will:
+1. clone this repository into `/content/TinyThinker`,
+2. install CUDA-enabled PyTorch and Python dependencies,
+3. verify GPU availability,
+4. use the repo `input.txt` by default (or let you upload/override),
+5. build dataset artifacts,
+6. train a model into a resumable run directory,
+7. print sample generations, and
+8. zip and download the training artifacts.
+
+If you want persistence beyond the download, set `USE_GOOGLE_DRIVE = True` in the notebook before running all cells.
+
+## Tests
+Run the targeted suite:
+
+```bash
+pytest tests/test_tokenizer.py \
+  tests/test_generate.py \
+  tests/test_build_memmap.py \
+  tests/test_checkpoint_roundtrip.py \
+  tests/test_train_smoke.py
+```
+
+## Notes
+- `chars.txt` is no longer the runtime source of truth for the tokenizer.
+- The included corpus is tiny, so the default model is intentionally small and trainable.
+- The Colab notebook is designed to orchestrate the Python entrypoints in this repo rather than embedding a second training implementation.
 
 ## License
-
 MIT
